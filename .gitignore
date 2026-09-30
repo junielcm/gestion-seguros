@@ -1,0 +1,19 @@
+# ==============================================================================
+# .gitignore - raíz del proyecto (solo para los archivos de Docker)
+# ==============================================================================
+# Cada subcarpeta (backend/ y frontend/) tiene su propio .gitignore.
+
+# Credenciales: nunca subir
+.env
+.env.*
+!.env.example
+
+# Artefactos de build de Docker
+*.tar
+*.tar.gz
+
+# Sistema operativo / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

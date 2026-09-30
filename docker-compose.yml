@@ -1,0 +1,132 @@
+# ==============================================================================
+# docker-compose.yml - Gestión de Seguros (stack completo)
+# ==============================================================================
+# Levanta los dos servicios de la aplicación con un solo comando:
+#
+#   docker compose up -d --build
+#
+# Resultado:
+#   http://localhost:8080/        -> aplicación React (servida por nginx)
+#   http://localhost:8080/admin/  -> panel de administración de Django
+#   http://localhost:8080/api/v1/ -> API REST
+#
+# Solo el frontend publica puertos en el host. El backend es reachable
+# únicamente desde la red interna de Compose (no se expone su 8000).
+#
+# ARQUITECTURA:
+#
+#   navegador ──:8080──> frontend (nginx) ──/api, /admin──> backend (gunicorn)
+#                          │                                  │
+#                          ├── /static/ ─┐                  ├── /app/data  (volumen)
+#                          └── /media/  ─┴── volumen backend_static / backend_media
+#                                                              (solo lectura en nginx)
+#
+# La configuración (secretos, puertos, flags) se lee del archivo .env de esta
+# carpeta. Copia .env.example a .env y ajústalo.
+# ==============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Backend: Django REST Framework sobre gunicorn
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: gestion-seguros-backend:latest
+    container_name: gestion-seguros-backend
+    restart: unless-stopped
+
+    environment:
+      # --- Django ---
+      # En Docker DEBUG va apagado: gunicorn no sirve estáticos y los errores
+      # detail no deben exponerse al exterior.
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: ${SECRET_KEY:-django-insecure-cambia-esta-clave-en-produccion}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      # nginx es el proxy inverso: hay que confiar en sus cabeceras.
+      USE_X_FORWARDED_HOST: "True"
+
+      # --- Base de datos ---
+      # SQLite dentro de un volumen con nombre. Para usar PostgreSQL
+      # (uncommentando estas líneas y añadiendo un servicio `db`), cambia:
+      #   DB_ENGINE=django.db.backends.postgresql
+      #   DB_HOST=db
+      DB_ENGINE: ${DB_ENGINE:-django.db.backends.sqlite3}
+      DB_NAME: ${DB_NAME:-/app/data/db.sqlite3}
+      DB_USER: ${DB_USER:-}
+      DB_PASSWORD: ${DB_PASSWORD:-}
+      DB_HOST: ${DB_HOST:-}
+      DB_PORT: ${DB_PORT:-}
+      DB_WAIT_TIMEOUT: ${DB_WAIT_TIMEOUT:-60}
+
+      # --- Comportamiento del arranque ---
+      # true = ejecuta setup_demo.py en cada `up`. Es idempotente (get_or_create),
+      # así que no duplica datos; ponlo en false para un entorno real.
+      LOAD_DEMO_DATA: ${LOAD_DEMO_DATA:-true}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
+
+      # --- CORS ---
+      # En este setup no hace falta (todo es same-origin a través de nginx).
+      CORS_ALLOW_ALL_ORIGINS: ${CORS_ALLOW_ALL_ORIGINS:-True}
+
+    volumes:
+      # Base de datos SQLite: sobrevive a `docker compose down`.
+      - backend_data:/app/data
+      # Salida de collectstatic: la lee nginx para servir /static/.
+      - backend_static:/app/staticfiles
+      # Comprobantes y órdenes médicas: la lee nginx para servir /media/.
+      - backend_media:/app/media
+
+    # Sin `ports:` a propósito -> el backend no queda expuesto en el host.
+    expose:
+      - "8000"
+
+    networks:
+      - gestion-seguros
+
+  # ---------------------------------------------------------------------------
+  # Frontend: build de Vite servido con nginx
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Se compila dentro del bundle en tiempo de build. Ruta relativa porque
+        # nginx hace de proxy de /api hacia el backend.
+        VITE_API_URL: ${VITE_API_URL:-/api/v1/}
+    image: gestion-seguros-frontend:latest
+    container_name: gestion-seguros-frontend
+    restart: unless-stopped
+
+    ports:
+      # ÚNICO puerto publicado en el host. Cámbialo con FRONTEND_PORT.
+      - "${FRONTEND_PORT:-8080}:80"
+
+    volumes:
+      # Mismos volúmenes que usa el backend, en solo lectura.
+      - backend_static:/var/www/static:ro
+      - backend_media:/var/www/media:ro
+
+    # Espera a que el backend responda su healthcheck, para no enrutar tráfico
+    # a un gunicorn que aún está aplicando migraciones.
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    networks:
+      - gestion-seguros
+
+volumes:
+  # Datos de la aplicación (db.sqlite3).
+  backend_data:
+  # Salida de collectstatic.
+  backend_static:
+  # Archivos subidos por usuarios.
+  backend_media:
+
+networks:
+  gestion-seguros:
+    driver: bridge
